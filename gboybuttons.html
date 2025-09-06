@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Retro Handheld UI</title>
+  <style>
+    :root{
+      --shell1:#ececed; --shell2:#cfcfd3;
+      --bezel:#3a3a3a; --bg:#20232a;
+      --dpad:#3f3f45; --btn:#b03a6b; --btn-dark:#7e274a;
+      --glow1:rgba(0,255,100,.25); --glow2:rgba(0,255,180,.10);
+    }
+
+    /* Layout */
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; background:var(--bg);
+      display:flex; align-items:center; justify-content:center;
+      padding:24px; /* breathing room on tiny screens */
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+
+    /* Handheld shell */
+    .handheld{
+      width:min(92vw, 520px);     /* responsive width */
+      border-radius:24px;
+      padding:clamp(16px, 3vw, 24px);
+      background:linear-gradient(160deg,var(--shell1) 0%,var(--shell2) 100%);
+      box-shadow:0 10px 30px rgba(0,0,0,.25);
+      display:flex; flex-direction:column; gap:clamp(16px, 3vw, 24px);
+    }
+
+    /* Screen bezel */
+    .screen{
+      width:100%;
+      aspect-ratio:4 / 3;
+      background:#111;
+      border:clamp(6px, 1.6vw, 10px) solid var(--bezel);
+      border-radius:12px;
+      position:relative; overflow:hidden;
+      box-shadow:
+        inset 0 0 25px var(--glow1),
+        inset 0 0 45px var(--glow2);
+    }
+    /* scanlines + subtle shimmer */
+    .screen::after{
+      content:""; position:absolute; inset:0;
+      background:
+        repeating-linear-gradient(
+          to bottom,
+          rgba(0,255,120,0.05) 0px,
+          rgba(0,255,120,0.05) 2px,
+          transparent 2px,
+          transparent 4px
+        );
+      mix-blend-mode:overlay; pointer-events:none;
+      animation: shimmer 6s linear infinite;
+      opacity:.9;
+    }
+    @keyframes shimmer{
+      0%{ transform: translateY(0); }
+      100%{ transform: translateY(-4px); }
+    }
+
+    /* Controls grid */
+    .gb{
+      width:100%;
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:clamp(12px, 3vw, 18px);
+      place-items:center;
+    }
+
+    /* D-pad */
+    .pad{ position:relative; width:clamp(110px, 28vw, 140px); height:clamp(110px, 28vw, 140px); }
+    .pad .stem{
+      position:absolute; left:50%; top:50%;
+      width:38%; height:38%; transform:translate(-50%,-50%);
+      background: radial-gradient(60% 60% at 30% 30%, #4a4a50 0 40%, #333 70% 100%);
+      border-radius:10px; box-shadow:0 3px 0 #222 inset,0 10px 16px rgba(0,0,0,.25);
+    }
+    .d{
+      position:absolute; border:none; cursor:pointer; background:var(--dpad);
+      width:32%; height:42%; border-radius:8px;
+      box-shadow:0 3px 0 #26262a inset, 0 -3px 0 rgba(255,255,255,.07) inset, 0 8px 16px rgba(0,0,0,.3);
+      touch-action:manipulation;
+      transition: transform .02s ease, box-shadow .02s ease, filter .02s;
+    }
+    .d.up{    top:8px;  left:50%; transform:translateX(-50%); }
+    .d.down{  bottom:8px; left:50%; transform:translateX(-50%); }
+    .d.left{  left:8px;  top:50%; transform:translateY(-50%) rotate(90deg); }
+    .d.right{ right:8px; top:50%; transform:translateY(-50%) rotate(90deg); }
+    .d:active{ filter:brightness(.95); }
+    .d.up:active,.d.down:active{ transform:translateX(-50%) translateY(1px); }
+    .d.left:active,.d.right:active{ transform:translateY(-50%) rotate(90deg) translateY(1px); }
+
+    /* A/B cluster */
+    .cluster{ position:relative; width:clamp(130px, 32vw, 170px); height:clamp(120px, 30vw, 150px); display:grid; place-items:center; }
+    .btn{
+      width:clamp(56px, 14vw, 78px); height:clamp(56px, 14vw, 78px);
+      border-radius:50%; border:none; cursor:pointer; touch-action:manipulation;
+      color:#f6e7ee; font-weight:800; letter-spacing:.5px; text-shadow: 0 1px 0 #5e1c36;
+      background:
+        radial-gradient(100% 100% at 30% 25%, rgba(255,255,255,.9) 0 8%, transparent 9%),
+        radial-gradient(130% 130% at 32% 28%, #d9568c 0 45%, #c14477 55% 70%, var(--btn) 71% 100%);
+      box-shadow: 0 8px 0 var(--btn-dark), 0 12px 24px rgba(0,0,0,.35);
+      transition: transform .06s cubic-bezier(.3,.7,.2,1), box-shadow .06s, filter .06s;
+    }
+    .btn.b{ position:absolute; right: clamp(10px, 2.5vw, 20px); bottom: clamp(18px, 2.5vw, 28px); }
+    .btn.a{ position:absolute; left:  clamp(10px, 2.5vw, 20px); top:    clamp(8px,  2.5vw, 16px); }
+    .btn:active{ transform: translateY(6px); box-shadow:0 2px 0 var(--btn-dark), 0 8px 16px rgba(0,0,0,.4) inset; filter: brightness(.98); }
+
+    /* Start/Select pills */
+    .sl{ grid-column: 1 / -1; display:flex; gap:clamp(12px, 3vw, 18px); justify-content:center; margin-top:-6px; }
+    .pill{
+      min-width: clamp(86px, 24vw, 120px); height: clamp(24px, 6vw, 30px);
+      border-radius:999px; border:none; cursor:pointer; touch-action:manipulation;
+      font-size: clamp(10px, 2.8vw, 12px); letter-spacing:1.4px; color:#2a2a2a;
+      background: linear-gradient(#f4f4f6, #dfdfe3);
+      box-shadow: 0 2px 0 rgba(0,0,0,.25), 0 8px 16px rgba(0,0,0,.17);
+      transition: transform .05s, box-shadow .05s, filter .05s;
+    }
+    .pill:active{ transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,.25) inset; }
+
+    /* Accessible focus */
+    button:focus-visible{ outline:2px solid rgba(124,157,255,.9); outline-offset: 3px; }
+
+    /* Tweak spacing on very small phones */
+    @media (max-width: 360px){
+      .handheld{ gap:16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="handheld" role="region" aria-label="Retro handheld UI">
+    <div class="screen" aria-label="Screen (decorative)"></div>
+
+    <div class="gb">
+      <!-- D-Pad -->
+      <div class="pad" role="group" aria-label="D-pad">
+        <button class="d up"    aria-label="Up"></button>
+        <button class="d left"  aria-label="Left"></button>
+        <button class="d right" aria-label="Right"></button>
+        <button class="d down"  aria-label="Down"></button>
+        <div class="stem" aria-hidden="true"></div>
+      </div>
+
+      <!-- A/B -->
+      <div class="cluster" role="group" aria-label="A and B buttons">
+        <button class="btn b" aria-label="B">B</button>
+        <button class="btn a" aria-label="A">A</button>
+      </div>
+
+      <!-- Start / Select -->
+      <div class="sl" role="group" aria-label="Start and Select">
+        <button class="pill select" aria-label="Select">SELECT</button>
+        <button class="pill start"  aria-label="Start">START</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
