@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Browser Datamosh (with Filters)</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0f17; --panel:#111826; --ink:#e6edf3; --mut:#9aa4b2; }
+  html,body { height:100%; margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 system-ui, sans-serif; }
+  .wrap { max-width: 1100px; margin: 24px auto; padding: 16px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:10px 0; }
+  .panel { background:var(--panel); border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:12px; }
+  video, canvas { width:100%; max-height:60vh; background:#000; border-radius:12px; display:block; }
+  label { color:var(--mut); display:inline-flex; align-items:center; gap:6px; }
+  input[type="range"]{ width:120px; }
+  button, select { background:#1a2236; color:var(--ink); border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:8px 10px; cursor:pointer; }
+  button:active { transform: translateY(1px); }
+  .hint { color:var(--mut); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Browser “Datamosh” (Canvas Smear + Filters)</h1>
+
+  <div class="row panel">
+    <input id="file" type="file" accept="video/*">
+    <button id="useCam">Use webcam</button>
+    <button id="play">Play</button>
+    <button id="pause">Pause</button>
+    <button id="glitch">Glitch</button>
+    <label>Smear <input id="smear" type="checkbox" checked></label>
+    <label>Trail <input id="trail" type="range" min="0" max="1" step="0.02" value="0.12"></label>
+    <label>Mode
+      <select id="mode">
+        <option value="lighter">lighter (pop)</option>
+        <option value="difference">difference (ghost)</option>
+        <option value="screen">screen (soft)</option>
+        <option value="multiply">multiply (dark)</option>
+      </select>
+    </label>
+    <label>Scale <input id="scale" type="range" min="0.25" max="2" step="0.01" value="1"></label>
+    <label>Filter
+      <select id="filter">
+        <option value="none">None</option>
+        <option value="vhs">VHS static / jitter</option>
+        <option value="rgb">RGB split</option>
+        <option value="hue">Hue spin</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="row">
+    <div class="panel" style="flex:1 1 360px; min-width:280px;">
+      <video id="vid" crossorigin="anonymous" playsinline muted></video>
+      <div class="hint">Tip: open via http://localhost (not file://). High-motion clips look best.</div>
+    </div>
+    <div class="panel" style="flex:1 1 360px; min-width:280px;">
+      <canvas id="out" width="960" height="540"></canvas>
+      <div class="hint">Output canvas (smear + blend + optional filter).</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const vid = document.getElementById('vid');
+  const file = document.getElementById('file');
+  const useCam = document.getElementById('useCam');
+  const playBtn = document.getElementById('play');
+  const pauseBtn = document.getElementById('pause');
+  const glitchBtn = document.getElementById('glitch');
+  const smearChk = document.getElementById('smear');
+  const trail = document.getElementById('trail');
+  const modeSel = document.getElementById('mode');
+  const scale = document.getElementById('scale');
+  const filterSel = document.getElementById('filter');
+
+  const out = document.getElementById('out');
+  const ctx = out.getContext('2d', { alpha: true });
+
+  // Offscreen accumulation buffer
+  const buf = document.createElement('canvas');
+  const bctx = buf.getContext('2d', { alpha: true });
+
+  let raf = 0;
+  let haveBase = false;
+  let glitchHold = false;
+  let stream = null;
+
+  file.addEventListener('change', e => {
+    const f = e.target.files[0]; if (!f) return;
+    stopStream();
+    vid.srcObject = null;
+    vid.src = URL.createObjectURL(f);
+    vid.muted = false;
+    vid.play().catch(()=>{});
+  });
+
+  useCam.addEventListener('click', async () => {
+    stopStream();
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: 960, height: 540 }, audio: false });
+      vid.srcObject = stream;
+      vid.muted = true;
+      await vid.play();
+    } catch (e) {
+      console.error(e);
+      alert('Could not access webcam.');
+    }
+  });
+
+  playBtn.addEventListener('click', () => vid.play().catch(()=>{}));
+  pauseBtn.addEventListener('click', () => vid.pause());
+
+  glitchBtn.addEventListener('click', () => {
+    haveBase = true;
+    glitchHold = true;
+    pulse(220);
+  });
+
+  function pulse(ms=180){
+    const orig = modeSel.value;
+    modeSel.dataset.prev = orig;
+    modeSel.value = 'lighter';
+    setTimeout(() => { modeSel.value = modeSel.dataset.prev || orig; }, ms);
+  }
+
+  function fit() {
+    const w = vid.videoWidth || 960, h = vid.videoHeight || 540;
+    out.width = w; out.height = h;
+    buf.width = w; buf.height = h;
+  }
+  vid.addEventListener('loadedmetadata', fit);
+
+  function stopStream(){
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  }
+
+  // ---- Filters ----
+  function applyVHS(c, w, h){
+    // horizontal tear on a random band + static speckles
+    const bandH = Math.max(2, (Math.random()*h*0.05)|0);
+    const y = (Math.random()*(h-bandH))|0;
+    const shift = (Math.random()*w*0.08 - w*0.04)|0;
+    const snap = c.getImageData(0, y, w, bandH);
+    c.clearRect(0, y, w, bandH);
+    c.putImageData(snap, Math.max(-w, Math.min(w, shift)), y);
+
+    // static dots
+    const dots = 200;
+    c.save();
+    c.globalAlpha = 0.25;
+    for(let i=0;i<dots;i++){
+      c.fillStyle = `rgb(${(Math.random()*255)|0},${(Math.random()*255)|0},${(Math.random()*255)|0})`;
+      c.fillRect((Math.random()*w)|0, (Math.random()*h)|0, 1, 1);
+    }
+    c.restore();
+  }
+
+  function applyRGBSplit(c, w, h){
+    // simple per-pixel channel offset (cheap but effective)
+    const img = c.getImageData(0,0,w,h);
+    const d = img.data;
+    const off = 6; // pixels to offset red/blue
+    // duplicate to avoid overwriting as we go
+    const src = new Uint8ClampedArray(d);
+    for (let y=0; y<h; y++){
+      for (let x=0; x<w; x++){
+        const i = (y*w + x) * 4;
+        // red from left
+        const rx = Math.max(0, x - off);
+        const ri = (y*w + rx) * 4;
+        d[i]   = src[ri];
+        // green stays
+        d[i+1] = src[i+1];
+        // blue from right
+        const bx = Math.min(w-1, x + off);
+        const bi = (y*w + bx) * 4;
+        d[i+2] = src[bi+2];
+        // alpha unchanged
+      }
+    }
+    c.putImageData(img,0,0);
+  }
+
+  function applyHueSpin(c, w, h, t){
+    c.save();
+    c.filter = `hue-rotate(${(t/20)%360}deg)`;
+    // redraw canvas onto itself with hue rotation
+    // use an offscreen snapshot to avoid recursive filter compounding
+    const tmp = document.createElement('canvas');
+    tmp.width = w; tmp.height = h;
+    tmp.getContext('2d').drawImage(c.canvas, 0, 0);
+    c.clearRect(0,0,w,h);
+    c.drawImage(tmp, 0, 0);
+    c.restore();
+  }
+
+  function applyFilter(name, c, w, h, t){
+    if (name === 'vhs')      applyVHS(c, w, h);
+    else if (name === 'rgb') applyRGBSplit(c, w, h);
+    else if (name === 'hue') applyHueSpin(c, w, h, t);
+  }
+
+  // ---- Core render ----
+  function draw() {
+    raf = requestAnimationFrame(draw);
+    if (!vid.videoWidth) return;
+
+    const w = out.width, h = out.height;
+    const s = parseFloat(scale.value);
+
+    // 1) decay previous accumulation
+    const decay = parseFloat(trail.value);
+    if (smearChk.checked) {
+      bctx.globalCompositeOperation = 'source-over';
+      bctx.fillStyle = `rgba(0,0,0,${decay})`;
+      bctx.fillRect(0,0,buf.width,buf.height);
+    } else {
+      if (!glitchHold) {
+        bctx.clearRect(0,0,buf.width,buf.height);
+        haveBase = false;
+      }
+    }
+
+    // lay base if needed
+    if (!haveBase) {
+      bctx.globalCompositeOperation = 'source-over';
+      bctx.drawImage(vid, 0, 0, w, h);
+      haveBase = true;
+    }
+
+    // 2) composite new frame with selected blend mode
+    bctx.globalCompositeOperation = modeSel.value;
+    bctx.drawImage(vid, 0, 0, w, h);
+
+    // 3) present to visible canvas (with optional scale)
+    const dw = Math.round(w * s), dh = Math.round(h * s);
+    const dx = (w - dw) >> 1, dy = (h - dh) >> 1;
+    ctx.clearRect(0,0,w,h);
+    if (s !== 1) ctx.drawImage(buf, 0, 0, w, h, dx, dy, dw, dh);
+    else         ctx.drawImage(buf, 0, 0);
+
+    // 4) apply selected FILTER on the visible canvas
+    const f = filterSel.value;
+    if (f !== 'none') applyFilter(f, ctx, w, h, performance.now());
+
+    if (vid.paused || vid.ended || !smearChk.checked) glitchHold = false;
+  }
+
+  vid.addEventListener('play', () => { cancelAnimationFrame(raf); draw(); });
+  vid.addEventListener('pause', () => cancelAnimationFrame(raf));
+  vid.addEventListener('ended', () => cancelAnimationFrame(raf));
+})();
+</script>
+</body>
+</html>
