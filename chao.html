@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Audio File Visualizer — Spectrum, Waveform, Chaos, Data</title>
+  <style>
+    :root { color-scheme: dark; --bg: #0b0f17; --panel: #121826; --text: #e6edf3; --muted: #9aa4b2; }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: sans-serif; }
+    .wrap { max-width: 900px; margin: 24px auto; padding: 16px; }
+    canvas { width: 100%; height: 300px; display: block; background: #111; border-radius: 12px; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; align-items: center; }
+    .modes { display: inline-flex; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; overflow: hidden; }
+    .modes button { border: none; background: transparent; padding: 8px 12px; cursor: pointer; }
+    .modes button.active { background: rgba(124,157,255,.22); }
+    button { border-radius: 8px; border: none; cursor: pointer; padding: 8px 12px; }
+    label { font-size: 0.9rem; color: var(--muted); display:flex; align-items:center; gap:6px; }
+    input[type="range"] { width: 110px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Audio File Visualizer — Spectrum, Waveform, Chaos, Data</h1>
+    <canvas id="canvas" width="1200" height="360"></canvas>
+    <div class="row">
+      <div class="modes">
+        <button id="modeSpectrum" class="active">Spectrum</button>
+        <button id="modeWaveform">Waveform</button>
+        <button id="modeChaos">Chaos</button>
+        <button id="modeData">Data</button>
+      </div>
+      <input id="file" type="file" accept="audio/*">
+      <button id="play" disabled>Play</button>
+      <button id="stop">Stop</button>
+    </div>
+    <div class="row">
+      <label>Bars <input id="bars" type="range" min="16" max="256" step="1" value="96"></label>
+      <label>Smoothing <input id="smoothing" type="range" min="0" max="0.95" step="0.01" value="0.7"></label>
+      <label>Tilt <input id="tilt" type="range" min="0" max="1" step="0.01" value="0.35"></label>
+      <label><input id="threeD" type="checkbox"> 3D</label>
+      <label>3D Intensity <input id="depthIntensity" type="range" min="0" max="12" step="0.1" value="1"></label>
+      <label>Chaos Intensity <input id="chaosIntensity" type="range" min="0" max="5" step="0.1" value="1"></label>
+      <label>Vanishing X <input id="vanishX" type="range" min="0" max="1" step="0.01" value="0.5"></label>
+      <label>Vanishing Y <input id="vanishY" type="range" min="0.05" max="0.9" step="0.01" value="0.2"></label>
+    </div>
+    <pre id="dataOut" style="display:none; margin-top:10px; background:#0a0a0a; color:#c7ff9e; padding:10px; border:1px solid rgba(255,255,255,0.12); border-radius:8px; height:160px; overflow:auto; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; white-space: pre-wrap;"></pre>
+  </div>
+
+  <script>
+  window.addEventListener('DOMContentLoaded', () => {
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Controls
+    const fileInput = document.getElementById('file');
+    const playBtn = document.getElementById('play');
+    const stopBtn = document.getElementById('stop');
+
+    const modeSpectrumBtn = document.getElementById('modeSpectrum');
+    const modeWaveformBtn = document.getElementById('modeWaveform');
+    const modeChaosBtn = document.getElementById('modeChaos');
+    const modeDataBtn = document.getElementById('modeData');
+
+    const barsSlider = document.getElementById('bars');
+    const smoothingSlider = document.getElementById('smoothing');
+    const tilt = document.getElementById('tilt');
+    const threeD = document.getElementById('threeD');
+    const depthIntensity = document.getElementById('depthIntensity');
+    const chaosIntensity = document.getElementById('chaosIntensity');
+    const vanishX = document.getElementById('vanishX');
+    const vanishY = document.getElementById('vanishY');
+    const dataOut = document.getElementById('dataOut');
+
+    // Audio graph
+    let audioCtx, analyser, gainNode;
+    let sourceNode = null;
+    let audio = null;
+    let fileLoaded = false;
+
+    function ensureAudioGraph(){
+      if (!audioCtx){
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = parseFloat(smoothingSlider.value);
+        gainNode = audioCtx.createGain();
+        gainNode.connect(analyser).connect(audioCtx.destination);
+      }
+    }
+
+    function rebuildSource(){
+      ensureAudioGraph();
+      if (sourceNode){ try { sourceNode.disconnect(); } catch (e) {} sourceNode = null; }
+      if (audio){ try { audio.pause(); } catch (e) {} }
+      audio = new Audio();
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'metadata';
+      audio.playsInline = true;
+      audio.addEventListener('ended', ()=> cancelAnimationFrame(rafId));
+    }
+
+    function loadFile(file){
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      rebuildSource();
+      audio.src = url;
+      audio.currentTime = 0;
+      try { audio.load(); } catch (e) {}
+      fileLoaded = true;
+      playBtn.disabled = false;
+    }
+    fileInput.addEventListener('change', e => loadFile(e.target.files[0]));
+
+    async function play(){
+      if (!fileLoaded){ console.warn('No file loaded'); return; }
+      ensureAudioGraph();
+      try { if (audioCtx.state === 'suspended') await audioCtx.resume(); } catch (e) { console.warn('resume failed', e); }
+      if (!sourceNode){
+        try { sourceNode = audioCtx.createMediaElementSource(audio); } catch (e) { console.error('createMediaElementSource failed', e); }
+        try { sourceNode && sourceNode.connect(gainNode); } catch (e) {}
+      }
+      try { await audio.play(); } catch (err) { console.error('audio.play failed', err); return; }
+      loop();
+    }
+    function stop(){
+      if (audio){ audio.pause(); audio.currentTime = 0; }
+      cancelAnimationFrame(rafId);
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+    }
+    playBtn.addEventListener('click', play);
+    stopBtn.addEventListener('click', stop);
+
+    // Mode switching
+    let mode = 'spectrum';
+    function setMode(next){
+      mode = next;
+      modeSpectrumBtn.classList.toggle('active', mode==='spectrum');
+      modeWaveformBtn.classList.toggle('active', mode==='waveform');
+      modeChaosBtn.classList.toggle('active', mode==='chaos');
+      modeDataBtn.classList.toggle('active', mode==='data');
+      dataOut.style.display = (mode==='data') ? 'block' : 'none';
+      try { render(); } catch (e) {}
+    }
+    modeSpectrumBtn.addEventListener('click', ()=> setMode('spectrum'));
+    modeWaveformBtn.addEventListener('click', ()=> setMode('waveform'));
+    modeChaosBtn.addEventListener('click', ()=> setMode('chaos'));
+    modeDataBtn.addEventListener('click', ()=> setMode('data'));
+
+    smoothingSlider.addEventListener('input', ()=> { if (analyser) analyser.smoothingTimeConstant = parseFloat(smoothingSlider.value); });
+
+    // Data buffers
+    const freqData = new Uint8Array(1024);
+    const timeData = new Uint8Array(1024);
+
+    // Render loop
+    let rafId;
+    function loop(){
+      rafId = requestAnimationFrame(loop);
+      render();
+    }
+
+    // Tilt helper
+    function applyTilt(){
+      const d = parseFloat(tilt.value);
+      if (d > 0){
+        const shear = -(0.05 + d * 0.6);
+        const scaleY = 1 - d * 0.15;
+        const offsetY = canvas.height * (0.02 + d * 0.08);
+        ctx.transform(1, 0, shear, scaleY, 0, offsetY);
+      }
+    }
+
+    // Colors by depth (warm -> cool)
+    function depthColor(i, n){
+      const t = i / n;
+      const hue = 40 + (t * 200);
+      return `hsl(${hue},100%,50%)`;
+    }
+
+    // Perspective floor grid
+    function drawFloorGrid(w,h){
+      ctx.save();
+      const intensity = Math.max(parseFloat(depthIntensity.value), 0.1);
+      const vp = { x: w * parseFloat(vanishX.value), y: h * parseFloat(vanishY.value) };
+      const rows = Math.max(6, Math.floor(10 * intensity));
+      const cols = 18;
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 1;
+      for(let r=0; r<=rows; r++){
+        const t = r / rows;
+        const y = h - (h - vp.y) * (t * t);
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      }
+      for(let c=0; c<=cols; c++){
+        const xb = (c / cols) * w;
+        ctx.beginPath(); ctx.moveTo(xb, h); ctx.lineTo(vp.x, vp.y); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Main render
+    function render(){
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.clearRect(0,0,w,h);
+      if (!analyser) return;
+
+      ctx.save();
+      applyTilt();
+      if (threeD.checked) drawFloorGrid(w,h);
+      if (mode === 'spectrum') drawSpectrum(w, h);
+      else if (mode === 'waveform') drawWaveform(w, h);
+      else if (mode === 'chaos') drawChaos(w, h);
+      else if (mode === 'data') drawData(w, h);
+      ctx.restore();
+    }
+
+    function drawSpectrum(w, h){
+      analyser.getByteFrequencyData(freqData);
+      const nBars = parseInt(barsSlider.value, 10);
+      const binStep = Math.max(1, Math.floor(freqData.length / nBars));
+      const barW = w / nBars;
+      for (let i = 0; i < nBars; i++){
+        let sum = 0;
+        for (let b = i*binStep; b < (i+1)*binStep && b < freqData.length; b++){ sum += freqData[b]; }
+        const v = (sum / binStep) / 255;
+        let barH = v * h;
+        let y = h - barH;
+        if (threeD.checked){
+          const intensity = parseFloat(depthIntensity.value);
+          const depthFactor = 1 - (i / nBars) * (0.8 * intensity);
+          barH *= Math.max(depthFactor, 0);
+          y -= (i/nBars) * h * 0.5 * intensity;
+          ctx.globalAlpha = Math.max(depthFactor, 0.1);
+        } else { ctx.globalAlpha = 1; }
+        const x = i * barW;
+        ctx.fillStyle = threeD.checked ? depthColor(i, nBars) : '#7c9dff';
+        ctx.fillRect(x + 1, y, Math.max(1, barW - 2), barH);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawWaveform(w, h){
+      analyser.getByteTimeDomainData(timeData);
+      const mid = h/2;
+      const intensity = parseFloat(depthIntensity.value);
+      const layers = threeD.checked ? Math.max(1, Math.floor(4*intensity)) : 0;
+      const drawPath = (offset=0, alpha=1, scale=1, hueShift=0) => {
+        ctx.beginPath();
+        for (let i=0;i<timeData.length;i++){
+          const t = i / (timeData.length-1);
+          const x = t * w;
+          const v = (timeData[i]-128)/128;
+          const y = mid + v*mid*0.95*scale + offset;
+          if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        }
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = threeD.checked ? `hsl(${200+hueShift},100%,50%)` : '#22d3ee';
+        ctx.lineWidth = 2; ctx.stroke(); ctx.globalAlpha = 1;
+      };
+      if (threeD.checked){ for (let d=1; d<=layers; d++){ drawPath(d*3, 0.1, 1 - d*0.05, d*10); } }
+      drawPath(0,1,1,0);
+    }
+
+    function drawChaos(w, h){
+      analyser.getByteFrequencyData(freqData);
+      const nBars = parseInt(barsSlider.value, 10);
+      const binStep = Math.max(1, Math.floor(freqData.length / nBars));
+      const barW = w / nBars;
+      const chaosLevel = parseFloat(chaosIntensity.value);
+      let energySum = 0; for (let k=0;k<freqData.length;k++) energySum += freqData[k];
+      const energy = energySum / (freqData.length * 255);
+      for (let i = 0; i < nBars; i++){
+        let sum = 0;
+        for (let b = i*binStep; b < (i+1)*binStep && b < freqData.length; b++){ sum += freqData[b]; }
+        let v = (sum / binStep) / 255;
+        let barH = v * h;
+        let y = h - barH;
+        if (threeD.checked){
+          const intensity = parseFloat(depthIntensity.value);
+          const depthFactor = 1 - (i / nBars) * (0.8 * intensity);
+          barH *= Math.max(depthFactor, 0);
+          y -= (i/nBars) * h * 0.5 * intensity;
+          ctx.globalAlpha = Math.max(depthFactor, 0.1);
+        } else { ctx.globalAlpha = 1; }
+        const x = i * barW;
+        const t = performance.now() * 0.25;
+        const jitter = (Math.random()-0.5) * 120 * chaosLevel;
+        const baseHue = (t + i*13 + jitter) % 360;
+        const depthHue = 40 + (i/nBars) * 200;
+        const mix = threeD.checked ? 0.45 : 0;
+        const hue = (1-mix)*baseHue + mix*depthHue;
+        const light = Math.max(30, Math.min(85, 45 + chaosLevel*10 + energy*25));
+        ctx.fillStyle = `hsl(${hue},100%,${light}%)`;
+        ctx.fillRect(x + 1, y, Math.max(1, barW - 2), barH);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Data mode metrics
+    function computeRMS(){
+      analyser.getByteTimeDomainData(timeData);
+      let acc=0; for (let i=0;i<timeData.length;i++){ const v=(timeData[i]-128)/128; acc += v*v; }
+      return Math.sqrt(acc/timeData.length);
+    }
+    function dominantFreq(){
+      analyser.getByteFrequencyData(freqData);
+      let maxVal=-1, maxIdx=0;
+      for (let i=0;i<freqData.length;i++){ if (freqData[i]>maxVal){ maxVal=freqData[i]; maxIdx=i; } }
+      const nyquist = (audioCtx && audioCtx.sampleRate ? audioCtx.sampleRate/2 : 22050);
+      const hzPerBin = nyquist / freqData.length;
+      return { hz: Math.round(maxIdx*hzPerBin), bin:maxIdx, amp:maxVal/255 };
+    }
+    let lastLog = 0;
+    function drawData(w,h){
+      if (threeD.checked) drawFloorGrid(w,h);
+      const now = performance.now();
+      if (now - lastLog < 100) return;
+      lastLog = now;
+      const rms = computeRMS();
+      const dom = dominantFreq();
+      let sum=0; for (let i=0;i<freqData.length;i++) sum += freqData[i];
+      const energy = +(sum/(freqData.length*255)).toFixed(3);
+      const peaks = [];
+      for (let i=1;i<freqData.length-1;i++) if (freqData[i] > freqData[i-1] && freqData[i] > freqData[i+1]) peaks.push({i, v: freqData[i]});
+      peaks.sort((a,b)=>b.v-a.v);
+      const nyq = (audioCtx && audioCtx.sampleRate ? audioCtx.sampleRate/2 : 22050);
+      const hzPerBin = nyq / freqData.length;
+      const top = peaks.slice(0,3).map(p=>({hz: Math.round(p.i*hzPerBin), amp: +(p.v/255).toFixed(3)}));
+      const line = JSON.stringify({ t: Math.round(now), mode, rms:+rms.toFixed(3), peakHz: dom.hz, peakAmp:+dom.amp.toFixed(3), energy, top });
+      dataOut.textContent += (dataOut.textContent ? '\n' : '') + line;
+      const lines = dataOut.textContent.split('\n');
+      if (lines.length > 200) dataOut.textContent = lines.slice(-200).join('\n');
+      dataOut.scrollTop = dataOut.scrollHeight;
+    }
+
+    // Kick an initial render so the UI isn't blank
+    render();
+  });
+  </script>
+</body>
+</html>
